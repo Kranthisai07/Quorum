@@ -57,6 +57,7 @@ class StressReport:
     units: int
     iterations: int
     barrier: bool
+    detect_contention: bool = True
     total_claims: int = 0
     duplicate_claims: int = 0
     iterations_with_duplicates: int = 0
@@ -86,6 +87,7 @@ class StressReport:
             "units": self.units,
             "iterations": self.iterations,
             "barrier": self.barrier,
+            "detect_contention": self.detect_contention,
             "ok": self.ok,
             "total_claims": self.total_claims,
             "duplicate_claims": self.duplicate_claims,
@@ -165,6 +167,7 @@ def run_stress(
     iterations: int = 200,
     mode: str = "safe",
     barrier: bool = False,
+    detect_contention: bool | None = None,
     settings: Settings | None = None,
 ) -> StressReport:
     """Contend `agents` agents over one workspace, `iterations` times."""
@@ -173,8 +176,14 @@ def run_stress(
     if unit_count == 0:
         raise ValueError("workspace has no work units to contend over")
 
+    detect = settings.conflict_detection if detect_contention is None else detect_contention
     report = StressReport(
-        mode=mode, agents=agents, units=unit_count, iterations=iterations, barrier=barrier
+        mode=mode,
+        agents=agents,
+        units=unit_count,
+        iterations=iterations,
+        barrier=barrier,
+        detect_contention=detect,
     )
     conflicts_before = conflicts.counts(workspace_id, settings).get("total", 0)
 
@@ -191,7 +200,12 @@ def run_stress(
         for iteration in range(iterations):
             reset_units(workspace_id, settings)
             observed = _drain(
-                workspace_id, agent_sessions, mode=mode, barrier=barrier, settings=settings
+                workspace_id,
+                agent_sessions,
+                mode=mode,
+                barrier=barrier,
+                detect_contention=detect_contention,
+                settings=settings,
             )
             _fold(report, iteration, observed, unit_count)
     finally:
@@ -223,6 +237,7 @@ def _drain(
     *,
     mode: str,
     barrier: bool,
+    detect_contention: bool | None,
     settings: Settings,
 ) -> _Observed:
     """All agents claim until nothing is left. Claims only -- no completion.
@@ -246,6 +261,7 @@ def _drain(
                 lease_seconds=STRESS_LEASE_SECONDS,
                 settings=settings,
                 on_selected=gate,
+                detect_contention=detect_contention,
             )
             with lock:
                 observed.retries += outcome.retries

@@ -18,7 +18,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-aws = ["boto3>=1.34"]
+aws = ["boto3>=1.34", "anthropic[bedrock]>=0.69"]
 dev = [
     "pytest>=8.0",
     "pytest-timeout>=2.3",

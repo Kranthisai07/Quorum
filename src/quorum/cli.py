@@ -29,6 +29,8 @@ app = typer.Typer(
 )
 db_app = typer.Typer(help="Local CockroachDB lifecycle (local profile only).", no_args_is_help=True)
 app.add_typer(db_app, name="db")
+bedrock_app = typer.Typer(help="Amazon Bedrock connectivity.", no_args_is_help=True)
+app.add_typer(bedrock_app, name="bedrock")
 
 console = Console()
 err_console = Console(stderr=True)
@@ -160,6 +162,91 @@ def reset(
     console.print(f"[green]reset complete[/green] ({len(applied)} migrations applied)")
 
 
+@bedrock_app.command("check")
+def bedrock_check(
+    as_json: Annotated[bool, typer.Option("--json", help="Emit the raw report.")] = False,
+) -> None:
+    """Verify both Bedrock paths independently against the configured account.
+
+    Reasoning and embeddings live on *different* endpoints with different auth,
+    so they are probed separately and reported separately: a green text check
+    tells you nothing about whether Titan works.
+    """
+    from quorum.llm import get_backend
+
+    settings = get_settings()
+    report = get_backend(settings).health()
+
+    if as_json:
+        console.print_json(json.dumps(report.to_dict()))
+        raise typer.Exit(0 if report.ok else 1)
+
+    console.print(f"[bold]backend[/bold]  {report.backend}")
+    console.print(f"  region        {report.region or '(n/a)'}")
+
+    text_mark = "[green]ok[/green]" if report.text_ok else "[red]FAILED[/red]"
+    embed_mark = "[green]ok[/green]" if report.embed_ok else "[red]FAILED[/red]"
+    console.print(f"  reasoning     {text_mark}  {report.text_model}")
+    console.print("                via Messages API (bedrock-mantle)")
+    console.print(f"  embeddings    {embed_mark}  {report.embed_model}")
+    console.print("                via boto3 bedrock-runtime InvokeModel")
+
+    if report.embed_dimensions is not None:
+        dim_mark = "[green]match[/green]" if report.dimensions_match else "[red]MISMATCH[/red]"
+        console.print(
+            f"  dimensions    {report.embed_dimensions} vs "
+            f"VECTOR({report.expected_dimensions}) in schema  {dim_mark}"
+        )
+
+    for note in report.notes:
+        console.print(f"  [dim]note[/dim]  {note}")
+    for error in report.errors:
+        err_console.print(f"  [red]error[/red] {error}")
+
+    if report.ok:
+        console.print("\n[green]Bedrock is reachable on both paths.[/green]")
+    else:
+        err_console.print(
+            "\n[red]Bedrock check failed.[/red] If credentials are the problem, "
+            "set AWS_REGION and the standard AWS credential environment "
+            "variables, or run with QUORUM_LLM_BACKEND=stub to work offline."
+        )
+        raise typer.Exit(1)
+
+
+@app.command()
+def findings(
+    workspace: Annotated[str, typer.Argument(help="Workspace id or name.")],
+    invalidating: Annotated[
+        bool, typer.Option("--invalidating", help="Only findings that invalidate work.")
+    ] = False,
+    limit: Annotated[int, typer.Option("--limit")] = 20,
+) -> None:
+    """What the agents discovered while working."""
+    from quorum import findings as finding_log
+    from quorum.workspace import resolve_workspace
+
+    found = resolve_workspace(workspace)
+    rows = finding_log.listing(
+        found["id"], invalidating_only=invalidating, limit=limit
+    )
+    if not rows:
+        console.print("no findings recorded")
+        return
+
+    table = Table(title="findings")
+    table.add_column("recorded")
+    table.add_column("invalidates", justify="center")
+    table.add_column("content")
+    for row in rows:
+        table.add_row(
+            row["created_at"].strftime("%H:%M:%S"),
+            "[red]yes[/red]" if row["invalidates"] else "no",
+            str(row["content"])[:110],
+        )
+    console.print(table)
+
+
 @app.command()
 def decompose(
     task: Annotated[Path, typer.Argument(help="Task spec JSON file.")] = DEFAULT_TASK,
@@ -273,8 +360,11 @@ def run(
     mode: Annotated[
         str | None, typer.Option("--mode", help="Override the workspace mode.")
     ] = None,
+    work_mode: Annotated[
+        str, typer.Option("--work-mode", help="migrate (real) or sleep (stub timing).")
+    ] = "migrate",
     work_seconds: Annotated[
-        float, typer.Option("--work-seconds", help="Stub work time per unit.")
+        float, typer.Option("--work-seconds", help="Sleep-mode work time per unit.")
     ] = 0.05,
     max_units: Annotated[
         int | None, typer.Option("--max-units", help="Stop each agent after N claims.")
@@ -292,6 +382,7 @@ def run(
         agents=agents,
         mode=mode,
         max_units=max_units,
+        work_mode=work_mode,
         work_seconds=work_seconds,
         seed=seed,
         transport=transport,  # type: ignore[arg-type]
@@ -303,6 +394,8 @@ def run(
     console.print(f"  txn retries      {report.total_retries}")
     console.print(f"  contended claims {report.total_contended}")
     console.print(f"  stale writes     {report.total_stale_writes}")
+    console.print(f"  findings         {report.total_findings}")
+    console.print(f"  changed lines    {report.total_changed_lines}")
     console.print(f"  duration         {report.duration_s:.2f}s")
 
     if report.errors:
@@ -338,6 +431,13 @@ def stress(
             help="Hold naive agents at their TOCTOU window so the race is deterministic.",
         ),
     ] = False,
+    detect: Annotated[
+        bool,
+        typer.Option(
+            "--detect/--no-detect",
+            help="Record contended claims. Observability, not safety.",
+        ),
+    ] = True,
     report_path: Annotated[
         Path | None, typer.Option("--report", help="Write the JSON report here.")
     ] = None,
@@ -348,7 +448,12 @@ def stress(
 
     found = resolve_workspace(workspace)
     result = run_stress(
-        found["id"], agents=agents, iterations=iterations, mode=mode, barrier=barrier
+        found["id"],
+        agents=agents,
+        iterations=iterations,
+        mode=mode,
+        barrier=barrier,
+        detect_contention=detect,
     )
 
     colour = "green" if result.ok else "red"

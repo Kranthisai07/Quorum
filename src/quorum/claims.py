@@ -128,6 +128,7 @@ def claim_next(
     lease_seconds: int | None = None,
     settings: Settings | None = None,
     on_selected: Callable[[uuid.UUID], None] | None = None,
+    detect_contention: bool | None = None,
 ) -> ClaimOutcome:
     """Claim one available work unit, or return an empty outcome if none remain.
 
@@ -145,7 +146,10 @@ def claim_next(
         return _claim_naive(
             workspace_id, session_id, lease=lease, settings=settings, on_selected=on_selected
         )
-    return _claim_safe(workspace_id, session_id, lease=lease, settings=settings)
+    detect = settings.conflict_detection if detect_contention is None else detect_contention
+    return _claim_safe(
+        workspace_id, session_id, lease=lease, settings=settings, detect=detect
+    )
 
 
 def _claim_safe(
@@ -154,43 +158,44 @@ def _claim_safe(
     *,
     lease: int,
     settings: Settings,
+    detect: bool = True,
 ) -> ClaimOutcome:
     state = _ClaimState()
 
+    # Contention shows up in two shapes, and both must be caught or the conflict
+    # log under-reports what happened:
+    #
+    #   1. The transaction aborted with 40001 and is being replayed. The unit it
+    #      was going for last time now belongs to someone else.
+    #   2. Far more common under `FOR UPDATE`: the transaction never aborted at
+    #      all. It *blocked* on the lock, and by the time CockroachDB handed it
+    #      over the winner had already taken the row. No retry, no error -- but
+    #      a race was lost all the same.
+    #
+    # The peek that catches shape 2 runs **outside** the transaction, and that
+    # placement is the whole design. Inside, it put a read at a timestamp the
+    # winner's commit then invalidated, so the transaction could not refresh and
+    # aborted -- the instrumentation manufactured the very retries it was
+    # reporting. Measured: 1,848 aborts with the peek inside, 0 with it outside,
+    # on identical work. Diagnostics must not perturb what they measure.
+    intended_id: uuid.UUID | None = None
+    if detect:
+        intended_id = _peek_candidate(workspace_id, settings)
+        state.last_target = intended_id
+
     def _attempt(cur: Cursor) -> ClaimedUnit | None:
-        # Contention shows up in two different shapes, and both have to be
-        # caught or the conflict log under-reports what actually happened.
-        #
-        #   1. The transaction aborted with 40001 and is being replayed. The
-        #      unit it was going for last time now belongs to someone else.
-        #   2. Far more common with `FOR UPDATE`: the transaction never aborted
-        #      at all. It *blocked* on the lock, and by the time CockroachDB
-        #      handed it over, the winner had already taken the row. No retry,
-        #      no error -- but a race was lost all the same.
-        #
-        # Detecting only (1) is how a first cut reports zero conflicts under
-        # heavy contention: correct behaviour, invisible evidence.
-        if state.last_target is not None:
-            _note_if_taken(cur, state, state.last_target, session_id)
-
-        # Unlocked peek: what this agent *intends* to claim, before queueing for
-        # the lock. If the locking read comes back with something else, the
-        # difference is exactly the set of racers that got there first.
-        cur.execute(CANDIDATE_SQL, (workspace_id,))
-        intended = cur.fetchone()
-        # Remembered *before* the locking read, not after. The abort usually
-        # happens on the locking read itself, so a target recorded afterwards is
-        # a target that never gets recorded at all -- which is how contention
-        # this heavy managed to log nothing on the first cut.
-        state.last_target = None if intended is None else intended["id"]
-
         cur.execute(CANDIDATE_SQL + " FOR UPDATE", (workspace_id,))
         candidate = cur.fetchone()
 
-        if intended is not None and (
-            candidate is None or candidate["id"] != intended["id"]
-        ):
-            _note_if_taken(cur, state, intended["id"], session_id)
+        # Every read below happens *after* the lock is held, so the transaction
+        # timestamp is already past the winner's commit and nothing here can
+        # cause a refresh failure.
+        if detect:
+            if state.last_target is not None and (
+                candidate is None or candidate["id"] != state.last_target
+            ):
+                _note_if_taken(cur, state, state.last_target, session_id)
+            state.last_target = None if candidate is None else candidate["id"]
 
         if candidate is None:
             _flush_conflicts(cur, workspace_id, session_id, state)
@@ -263,6 +268,22 @@ def _claim_safe(
             },
         )
     return outcome
+
+
+def _peek_candidate(workspace_id: uuid.UUID, settings: Settings) -> uuid.UUID | None:
+    """Which unit this agent would go for, read outside any transaction.
+
+    Its own tiny autocommit read, deliberately. Anything this observes is
+    advisory: it feeds the conflict log and nothing else, so a stale answer
+    costs an unlogged conflict at worst and never a wrong claim.
+    """
+
+    def _read(cur: Cursor) -> uuid.UUID | None:
+        cur.execute(CANDIDATE_SQL, (workspace_id,))
+        row = cur.fetchone()
+        return None if row is None else row["id"]
+
+    return run_autocommit(_read, label="claim.peek", settings=settings).value
 
 
 def _note_if_taken(

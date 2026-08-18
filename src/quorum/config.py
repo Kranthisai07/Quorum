@@ -46,6 +46,7 @@ class Settings:
     aws_region: str
     bedrock_text_model: str
     bedrock_embed_model: str
+    bedrock_thinking: str
     embed_dim: int
     artifact_backend: ArtifactBackend
     artifact_dir: Path
@@ -56,6 +57,7 @@ class Settings:
     heartbeat_seconds: int
     txn_max_retries: int
     semantic_threshold: float
+    conflict_detection: bool
     log_level: str
     log_format: str
     repo_root: Path = field(default=REPO_ROOT)
@@ -104,6 +106,7 @@ def get_settings() -> Settings:
         # Bedrock model IDs carry an `anthropic.` prefix.
         bedrock_text_model=_env("QUORUM_BEDROCK_TEXT_MODEL", "anthropic.claude-opus-5"),
         bedrock_embed_model=_env("QUORUM_BEDROCK_EMBED_MODEL", "amazon.titan-embed-text-v2:0"),
+        bedrock_thinking=_env("QUORUM_BEDROCK_THINKING", "adaptive"),
         embed_dim=_env_int("QUORUM_EMBED_DIM", 1024),
         artifact_backend=_env("QUORUM_ARTIFACT_BACKEND", "local"),  # type: ignore[arg-type]
         artifact_dir=artifact_dir,
@@ -114,6 +117,8 @@ def get_settings() -> Settings:
         heartbeat_seconds=_env_int("QUORUM_HEARTBEAT_SECONDS", 10),
         txn_max_retries=_env_int("QUORUM_TXN_MAX_RETRIES", 8),
         semantic_threshold=_env_float("QUORUM_SEMANTIC_THRESHOLD", 0.82),
+        conflict_detection=_env("QUORUM_CONFLICT_DETECTION", "true").lower()
+        not in {"0", "false", "no"},
         log_level=_env("QUORUM_LOG_LEVEL", "INFO"),
         log_format=_env("QUORUM_LOG_FORMAT", "json"),
     )

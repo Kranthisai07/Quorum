@@ -67,6 +67,14 @@ class RunReport:
         return sum(int(w.get("stale_writes", 0)) for w in self.workers)
 
     @property
+    def total_findings(self) -> int:
+        return sum(int(w.get("findings_recorded", 0)) for w in self.workers)
+
+    @property
+    def total_changed_lines(self) -> int:
+        return sum(int(w.get("changed_lines", 0)) for w in self.workers)
+
+    @property
     def errors(self) -> list[dict[str, str]]:
         """Workers that crashed.
 
@@ -101,6 +109,8 @@ class RunReport:
             "total_retries": self.total_retries,
             "total_contended": self.total_contended,
             "total_stale_writes": self.total_stale_writes,
+            "total_findings": self.total_findings,
+            "total_changed_lines": self.total_changed_lines,
             "duplicate_claims": self.duplicate_claims,
             "errors": self.errors,
             "workers": self.workers,
@@ -113,6 +123,7 @@ def run(
     agents: int = 4,
     mode: str | None = None,
     max_units: int | None = None,
+    work_mode: str = "migrate",
     work_seconds: float = 0.05,
     seed: int | None = None,
     transport: Transport = "thread",
@@ -130,6 +141,7 @@ def run(
             "agent_name": f"agent-{index}",
             "mode": resolved_mode,
             "max_units": max_units,
+            "work_mode": work_mode,
             "work_seconds": work_seconds,
             "seed": None if seed is None else seed + index,
         }

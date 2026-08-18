@@ -12,6 +12,24 @@ memory. The hard part is not the agents — it is that they **contend**:
 Quorum resolves all three using CockroachDB's serializable transactions and
 distributed vector index as the coordination primitive.
 
+> ## An empty conflict feed is not evidence of a calm system.
+>
+> That is the whole problem. When concurrent agents corrupt shared memory, the
+> corruption does not announce itself — there is no exception, no failed
+> request, no red line in a dashboard. Two agents migrate the same file and one
+> result silently wins. Two agents adopt contradictory conventions and both
+> decisions sit there marked `active`. Nothing is logged, because nothing
+> noticed.
+>
+> That is why it survives in production. Quorum's job is to make the failure
+> *visible* first, and prevented second.
+>
+> The measurement below makes the point twice over. Run the unsafe path and it
+> double-claims 1,596 times while logging **zero** conflicts. Run the safe path
+> with its instrumentation switched off and it logs **zero** conflicts too —
+> while eight agents fight over every single row. Same empty feed. Completely
+> different systems.
+
 > **The thesis:** remove CockroachDB and this system does not degrade — it
 > produces corrupt, contradictory output. The database is not storage here.
 > It is the concurrency control.
@@ -30,8 +48,8 @@ Built in phases. This is what currently runs end to end:
 |---|---|---|
 | 1 | Foundation: schema, migrations, decomposition, seeding, local cluster | **done** |
 | 2 | Claim engine: leases, heartbeats, expiry reclaim, contention log | **done** |
-| 3 | Real agents on Amazon Bedrock | next |
-| 4 | Semantic conflict: embeddings, vector search, reconciliation | planned |
+| 3 | Real agents on Amazon Bedrock | **done** (unverified against a live AWS account) |
+| 4 | Semantic conflict: embeddings, vector search, reconciliation | next |
 | 5 | Invalidation cascade | planned |
 | 6 | CockroachDB Cloud Managed MCP Server for agent reads | planned |
 | 7 | Dashboard | planned |
@@ -61,29 +79,50 @@ for the *same* row:
 | | `safe` | `naive` | `naive` (no barrier) |
 |---|---|---|---|
 | Iterations | 200 | 25 | 50 |
-| Claims | 3,200 | 1,384 | 2,797 |
-| **Double-claims** | **0** | **984** | **1,997** |
+| Claims | 3,200 | 1,996 | 3,988 |
+| **Double-claims** | **0** | **1,596** | **3,188** |
 | Rounds with duplicates | 0 / 200 | 25 / 25 | 50 / 50 |
 | Most agents on one unit | 1 | 8 | 8 |
-| Serialization retries | 5,603 (max 5 on one claim) | 0 | 0 |
-| Conflicts logged | 5,603 | **0** | **0** |
-| Claims/sec | 39.7 | 293.3 | 291.1 |
+| Most agents losing one race | 7 | — | — |
+| Conflicts logged | 4,216 | **0** | **0** |
+| Claims/sec | 44.8 | 178.9 | 165.7 |
 
-Three things in that table matter more than the zero:
-
-- **Contention was real.** 5,603 retries and up to 7 agents losing the same race
-  means safe mode was genuinely contended, not accidentally serialized.
-- **Naive never finds out.** It corrupts the workspace and logs *zero* conflicts.
-  An empty conflict feed is not evidence of a calm system.
-- **Naive is 7× faster.** That is the trade being bought: throughput for
-  correctness. Quorum reports the price rather than hiding it.
+Naive mode double-claims 1,596 times and logs nothing, because it never finds
+out. Safe mode hands every unit to exactly one agent and records all 4,216
+races it resolved — including one row that seven agents lost simultaneously.
 
 The barrier column holds every naive agent at its select-then-update window so
-the race is deterministic on demand — useful for a live demo. The third column
-is the same run *without* it: the bug is entirely naive mode's own, and the
-barrier only removes the luck. Reproduce with
-`quorum stress <workspace> --agents 8 --iterations 200 --mode safe|naive`.
-Raw reports: [docs/stress-safe.json](docs/stress-safe.json),
+the race is deterministic on demand, which is useful for a live demo. The third
+column is the same run *without* it: the bug is entirely naive mode's own, and
+the barrier only removes the luck.
+
+#### What safety actually costs
+
+A single "safe is 7× slower" number invites the obvious question — slower
+because of *what*? Two separable things, with very different standing
+([docs/stress-cost-breakdown.json](docs/stress-cost-breakdown.json)):
+
+| | claims/sec | vs. naive |
+|---|---|---|
+| `naive` — unsafe | 293.3 | 1.0× |
+| `safe` — correctness only | 49.7 | **5.9× slower** |
+| `safe` + conflict logging | 40.7 | 7.2× slower |
+
+**5.9× buys correctness** and is not optional. The remaining **1.22× buys the
+conflict feed** and is: `QUORUM_CONFLICT_DETECTION=false` turns it off, or it
+could be sampled under load. Correctness is identical either way — only the
+evidence disappears.
+
+That last row is worth dwelling on, because it is the thesis in miniature. With
+detection off, safe mode is *just as contended* — eight agents still fight over
+every row — and its conflict feed is empty. Silence is the default state of a
+system under contention, whether or not that contention is being handled
+correctly. Only deliberate instrumentation tells the two apart.
+
+Reproduce with
+`quorum stress <workspace> --agents 8 --iterations 200 --mode safe|naive`
+and `python scripts/benchmark_claim_cost.py`. Raw reports:
+[docs/stress-safe.json](docs/stress-safe.json),
 [docs/stress-naive.json](docs/stress-naive.json).
 
 ### 2. Semantic conflict — two agents reach contradictory conclusions
@@ -167,7 +206,7 @@ behaviour in [docs/production-readiness.md](docs/production-readiness.md).
 | **Partial index** | `INDEX (claim_expires_at) WHERE status = 'claimed'` lets the lease reaper find expired claims without scanning every unit. |
 | **`JSONB`** | Work unit specs and conflict details stay schemaless where the domain plugs in, indexed where the engine needs them. |
 | **`UUID[]`** | `conflict_log.agents` records exactly who was involved in each conflict. |
-| **Lock-wait vs. abort** | Under `FOR UPDATE`, most losers *block on the lock* rather than aborting with 40001. Quorum detects both shapes, because a detector that only catches aborts reports zero conflicts under heavy contention — correct behaviour, invisible evidence. |
+| **Lock-wait vs. abort** | Under `FOR UPDATE`, losers *block on the lock* rather than aborting with 40001 — a correct, heavily contended run has **zero** retries. Quorum detects both shapes, because a detector that only watches for aborts reports zero conflicts under heavy contention: correct behaviour, invisible evidence. |
 | **Autocommit path (deliberately)** | `naive` mode uses no transaction and no retry, giving the demo a control group that fails the way ordinary agent memory fails. |
 | **CockroachDB Cloud Managed MCP Server** | Agent *read* paths go through MCP (audited, safe by default). Writes that need isolation stay in the application layer — see the honesty note below. |
 | **`ccloud`** | Kills a node mid-run in the demo, to show agents continuing with zero lost work. |
@@ -191,9 +230,32 @@ it is a better engineering answer than pretending everything goes through MCP.
 
 | Service | Role |
 |---|---|
-| **Amazon Bedrock** | Agent reasoning (the migration itself) and embeddings (Titan Text Embeddings V2, 1024-d, matching the `VECTOR(1024)` column). Also the judge that classifies two near-neighbour decisions as `agrees` / `contradicts` / `unrelated`. |
-| **AWS Lambda** | Agent workers in the cloud profile. The worker entrypoint is Lambda-shaped from the start; the local runner invokes the same handler in a subprocess. |
-| **Amazon S3** | Migration artifacts (diffs, rewritten files). `work_units.result_ref` holds the key. Locally this is a directory. |
+| **Amazon Bedrock — Claude** | Agent reasoning (the migration itself), and in Phase 4 the judge that classifies two near-neighbour decisions as `agrees` / `contradicts` / `unrelated`. Reached through the **Messages API** endpoint (`bedrock-mantle.{region}.api.aws`) via `AnthropicBedrockMantle`. |
+| **Amazon Bedrock — Titan** | Embeddings (Titan Text Embeddings V2, 1024-d, matching the `VECTOR(1024)` column). Reached through **`bedrock-runtime` `InvokeModel`** via boto3 — a different endpoint with different auth. |
+| **AWS Lambda** | Agent workers in the cloud profile. The worker entrypoint is Lambda-shaped from the start; the local runner invokes the same handler in a thread or a subprocess. |
+| **Amazon S3** | Migration artifacts (unified diffs). `work_units.result_ref` holds the key, versioned so a redo after a lease expiry cannot overwrite the original. Locally this is a directory. |
+
+**Two Bedrock endpoints, not one.** Claude and Titan do not share a client, an
+endpoint, or an auth path, and their model-ID conventions differ —
+`anthropic.claude-opus-5` has no revision suffix, `amazon.titan-embed-text-v2:0`
+does. `quorum bedrock check` probes each independently and reports them
+separately, because a green reasoning check tells you nothing about whether
+embeddings work.
+
+```
+$ quorum bedrock check
+backend  bedrock
+  region        us-east-1
+  reasoning     ok      anthropic.claude-opus-5
+                via Messages API (bedrock-mantle)
+  embeddings    ok      amazon.titan-embed-text-v2:0
+                via boto3 bedrock-runtime InvokeModel
+  dimensions    1024 vs VECTOR(1024) in schema  match
+```
+
+That last line is the one that matters before Phase 4: an embedding width that
+disagrees with the schema is caught here, not in the middle of contradiction
+detection.
 
 Local development requires none of them: `QUORUM_LLM_BACKEND=stub`,
 `QUORUM_ARTIFACT_BACKEND=local`, `QUORUM_RUNNER=local`.
@@ -251,6 +313,9 @@ quorum agents demo                   # live sessions and what they hold
 quorum conflicts demo                # the conflict feed
 quorum reap demo                     # return expired leases to the pool
 
+quorum bedrock check                 # probe both Bedrock endpoints separately
+quorum findings demo --invalidating  # discoveries that affect other work
+
 quorum stress demo --agents 8 --iterations 200 --mode safe
 quorum stress demo-naive --agents 8 --iterations 25 --mode naive --barrier
 
@@ -264,7 +329,7 @@ The DB Console is at <http://127.0.0.1:8080> while the local cluster is running.
 ### Tests and lint
 
 ```bash
-pytest                    # 107 tests; integration tests skip if no cluster is up
+pytest                    # 167 tests; integration tests skip if no cluster is up
 pytest -m "not integration"
 ruff check .
 ```
@@ -293,6 +358,10 @@ implementation, not a hardcoded assumption. See
 
 ```
 src/quorum/
+  llm.py               Bedrock (two clients) and the deterministic stub backend
+  migration.py         the work itself: prompt, parse, diff, finding
+  artifacts.py         result storage: local filesystem or S3
+  findings.py          agent discoveries, embedded on write
   claims.py            the claim engine: leases, contention, reclaim
   sessions.py          agent registration, heartbeats, liveness
   conflicts.py         the conflict log

@@ -4,9 +4,10 @@
   "units": 16,
   "iterations": 50,
   "barrier": false,
+  "detect_contention": true,
   "ok": false,
-  "total_claims": 2797,
-  "duplicate_claims": 1997,
+  "total_claims": 3988,
+  "duplicate_claims": 3188,
   "iterations_with_duplicates": 50,
   "unclaimed_units": 0,
   "txn_retries": 0,
@@ -15,76 +16,76 @@
   "conflicts_logged": 0,
   "max_losers_on_one_unit": 0,
   "conflicts_on_hottest_unit": 0,
-  "duration_s": 9.61,
-  "claims_per_second": 291.1,
+  "duration_s": 24.06,
+  "claims_per_second": 165.7,
   "samples": [
     {
       "iteration": 0,
-      "unit_id": "77477e52-1ad2-4629-b0c1-d81cebe21f2f",
+      "unit_id": "e47d3754-8de7-48bd-8d91-71b557329eb0",
       "agents": [
-        "stress-agent-1",
         "stress-agent-0",
+        "stress-agent-2",
+        "stress-agent-1",
+        "stress-agent-5",
         "stress-agent-4",
         "stress-agent-3",
-        "stress-agent-2",
-        "stress-agent-6",
-        "stress-agent-5"
+        "stress-agent-7"
       ]
     },
     {
       "iteration": 1,
-      "unit_id": "77477e52-1ad2-4629-b0c1-d81cebe21f2f",
+      "unit_id": "e47d3754-8de7-48bd-8d91-71b557329eb0",
       "agents": [
-        "stress-agent-2",
-        "stress-agent-3",
-        "stress-agent-5",
-        "stress-agent-0",
         "stress-agent-6",
+        "stress-agent-3",
+        "stress-agent-0",
         "stress-agent-1",
+        "stress-agent-7",
         "stress-agent-4",
-        "stress-agent-7"
+        "stress-agent-5",
+        "stress-agent-2"
       ]
     },
     {
       "iteration": 2,
-      "unit_id": "77477e52-1ad2-4629-b0c1-d81cebe21f2f",
+      "unit_id": "e47d3754-8de7-48bd-8d91-71b557329eb0",
       "agents": [
-        "stress-agent-1",
-        "stress-agent-3",
-        "stress-agent-6",
-        "stress-agent-5",
-        "stress-agent-4",
         "stress-agent-2",
         "stress-agent-7",
-        "stress-agent-0"
+        "stress-agent-3",
+        "stress-agent-1",
+        "stress-agent-0",
+        "stress-agent-4",
+        "stress-agent-5",
+        "stress-agent-6"
       ]
     },
     {
       "iteration": 3,
-      "unit_id": "77477e52-1ad2-4629-b0c1-d81cebe21f2f",
+      "unit_id": "e47d3754-8de7-48bd-8d91-71b557329eb0",
       "agents": [
-        "stress-agent-4",
-        "stress-agent-2",
-        "stress-agent-3",
+        "stress-agent-1",
+        "stress-agent-7",
         "stress-agent-5",
         "stress-agent-6",
         "stress-agent-0",
-        "stress-agent-1",
-        "stress-agent-7"
+        "stress-agent-3",
+        "stress-agent-4",
+        "stress-agent-2"
       ]
     },
     {
       "iteration": 4,
-      "unit_id": "77477e52-1ad2-4629-b0c1-d81cebe21f2f",
+      "unit_id": "e47d3754-8de7-48bd-8d91-71b557329eb0",
       "agents": [
-        "stress-agent-3",
-        "stress-agent-4",
-        "stress-agent-1",
-        "stress-agent-6",
         "stress-agent-7",
-        "stress-agent-2",
+        "stress-agent-6",
         "stress-agent-0",
-        "stress-agent-5"
+        "stress-agent-2",
+        "stress-agent-1",
+        "stress-agent-5",
+        "stress-agent-4",
+        "stress-agent-3"
       ]
     }
   ]

@@ -147,6 +147,20 @@ directly opposed. Embeddings catch it; `LIKE` never will.
 The LLM is deliberately downstream of the index: ANN narrows thousands of
 decisions to a handful, and only that handful costs a model call.
 
+**Classify first, deduplicate second.** A near-duplicate gate placed *before*
+contradiction classification is a documented way to lose real conflicts
+silently: contradiction and near-duplication look identical to cosine distance,
+so a dedup check rejects the contradictory write as "too similar to an existing
+decision" and the contradiction detector never sees it. Only the classifier can
+tell the two apart, so nothing may be dropped on similarity alone before it has
+been classified.
+
+This is also why the stub backend cannot stand in for the classifier. Its
+embeddings are lexical, and it scores "standardise on httpx" against "keep
+requests for the unix socket transport" as *unrelated* — they share no words —
+when they are in fact directly opposed. `test_stub_similarity_is_lexical_not_semantic`
+asserts that limitation so nobody trusts it by accident.
+
 ### 4.3 Cascade: one transaction, or none
 
 ```

@@ -73,17 +73,73 @@ class TestSafeMode:
         assert report.iterations_with_duplicates == 0
 
     def test_contention_is_real_and_recorded(self, contended_workspace):
-        """Zero duplicates could also mean the agents never actually raced."""
+        """Zero duplicates could also mean the agents never actually raced.
+
+        Note what is *not* asserted here: serialization retries. Under
+        `FOR UPDATE` the losers block on the lock and commit cleanly once it is
+        handed over, so a correct, heavily contended run has zero aborts. Using
+        retry count as the contention signal is what hid the problem the first
+        time round.
+        """
         workspace_id, settings = contended_workspace
 
         report = stress.run_stress(
             workspace_id, agents=AGENTS, iterations=20, mode="safe", settings=settings
         )
 
-        assert report.txn_retries > 0, "no serialization conflicts -- agents never contended"
         assert report.conflicts_logged > 0, "contention happened but was never logged"
         assert report.max_losers_on_one_unit >= 2, (
             "expected several agents to lose the same race"
+        )
+
+    def test_detection_does_not_manufacture_aborts(self, contended_workspace):
+        """Instrumentation must not perturb what it measures.
+
+        The conflict peek originally ran inside the claim transaction, where it
+        left a read at a timestamp the winner's commit invalidated -- so the
+        transaction could not refresh and aborted. It reported ~1.9 retries per
+        claim that existed only because it was watching. Moved outside the
+        transaction, the same detection costs no aborts at all.
+        """
+        workspace_id, settings = contended_workspace
+
+        report = stress.run_stress(
+            workspace_id, agents=AGENTS, iterations=20, mode="safe", settings=settings
+        )
+
+        assert report.conflicts_logged > 0, "detection was not actually active"
+        assert report.txn_retries <= report.total_claims * 0.05, (
+            f"{report.txn_retries} aborts over {report.total_claims} claims -- "
+            "the detector is inducing the contention it reports"
+        )
+
+    def test_detection_changes_visibility_not_correctness(self, contended_workspace):
+        """Turning the conflict feed off must cost evidence, never safety."""
+        workspace_id, settings = contended_workspace
+
+        watched = stress.run_stress(
+            workspace_id,
+            agents=AGENTS,
+            iterations=10,
+            mode="safe",
+            detect_contention=True,
+            settings=settings,
+        )
+        blind = stress.run_stress(
+            workspace_id,
+            agents=AGENTS,
+            iterations=10,
+            mode="safe",
+            detect_contention=False,
+            settings=settings,
+        )
+
+        assert watched.ok and blind.ok
+        assert watched.duplicate_claims == blind.duplicate_claims == 0
+        assert watched.conflicts_logged > 0
+        assert blind.conflicts_logged == 0, (
+            "an empty conflict feed on a contended workspace -- exactly the "
+            "false reassurance the whole project is about"
         )
 
     def test_conflict_rows_name_both_sides(self, contended_workspace):
@@ -201,6 +257,10 @@ class TestAgentDeath:
                 "agent_name": "doomed",
                 "mode": "safe",
                 "max_units": 1,
+                # `sleep` mode, so the agent holds its lease long enough to be
+                # killed while holding it. Real migration work finishes in
+                # milliseconds against the stub backend.
+                "work_mode": "sleep",
                 "work_seconds": 60,  # it will never finish
                 "lease_seconds": 2,
             }

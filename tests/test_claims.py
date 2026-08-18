@@ -333,3 +333,121 @@ class TestNaiveMode:
         claims.claim_next(workspace_id, bob.id, mode="naive", settings=settings)
 
         assert conflicts.counts(workspace_id, settings)["total"] == 0
+
+
+class TestConflictLogIntegrity:
+    """`conflict_log` is the headline artifact, so it must not be inflated.
+
+    The contention peek is on the logging path, not the correctness path, so a
+    wrong entry cannot corrupt a workspace -- but an inflated conflict count
+    would discredit the entire feed, which is worse for the argument than
+    logging nothing. Every one of these asserts that an *uncontended* claim
+    stays out of the log.
+    """
+
+    def test_a_single_agent_working_alone_logs_nothing(self, workspace):
+        workspace_id, alice, _bob, settings = workspace
+
+        while claims.claim_next(workspace_id, alice.id, settings=settings).claimed:
+            pass
+
+        assert conflicts.counts(workspace_id, settings)["total"] == 0
+
+    def test_agents_taking_turns_log_nothing(self, workspace):
+        """Sequential claims by different agents are not a race."""
+        workspace_id, alice, bob, settings = workspace
+
+        claims.claim_next(workspace_id, alice.id, settings=settings)
+        claims.claim_next(workspace_id, bob.id, settings=settings)
+        claims.claim_next(workspace_id, alice.id, settings=settings)
+
+        assert conflicts.counts(workspace_id, settings)["total"] == 0
+
+    def test_a_clean_win_is_not_recorded_as_a_loss(self, workspace):
+        workspace_id, alice, _bob, settings = workspace
+
+        outcome = claims.claim_next(workspace_id, alice.id, settings=settings)
+
+        assert outcome.claimed
+        assert outcome.contended == []
+
+    def test_completing_and_reclaiming_logs_nothing(self, workspace):
+        """A full uncontended lifecycle produces an empty conflict feed."""
+        workspace_id, alice, _bob, settings = workspace
+
+        for _ in range(3):
+            outcome = claims.claim_next(workspace_id, alice.id, settings=settings)
+            assert outcome.unit is not None
+            claims.complete(outcome.unit, alice.id, result_ref="x", settings=settings)
+
+        assert conflicts.counts(workspace_id, settings)["total"] == 0
+
+    def test_a_stale_peek_does_not_invent_a_winner(self, workspace):
+        """The peek runs outside the transaction, so its answer can go stale.
+
+        Staleness must cost an *unlogged* conflict at worst, never a fabricated
+        one: the unit is re-read under the lock before anything is recorded.
+        """
+        workspace_id, alice, bob, settings = workspace
+
+        # Alice takes the first unit, then releases it. A peek taken before the
+        # release would name a unit that nobody ends up holding.
+        first = claims.claim_next(workspace_id, alice.id, settings=settings)
+        assert first.unit is not None
+        claims.release(first.unit, alice.id, settings=settings)
+
+        retaken = claims.claim_next(workspace_id, bob.id, settings=settings)
+
+        assert retaken.unit is not None
+        assert retaken.unit.id == first.unit.id
+        assert conflicts.counts(workspace_id, settings)["total"] == 0
+
+    def test_recorded_winners_really_hold_the_unit(self, clean_workspaces, fixture_task_spec):
+        """Cross-check every logged conflict against the actual holder."""
+        import threading
+
+        from quorum.workspace import seed_workspace
+
+        settings = clean_workspaces
+        seeded = seed_workspace(
+            name=f"integrity-{uuid.uuid4().hex[:8]}",
+            task_spec=fixture_task_spec,
+            mode="safe",
+            settings=settings,
+        )
+        agents = [
+            sessions.register(seeded.workspace_id, f"racer-{i}", settings) for i in range(6)
+        ]
+
+        def drain(session):
+            while claims.claim_next(
+                seeded.workspace_id, session.id, lease_seconds=600, settings=settings
+            ).claimed:
+                pass
+
+        threads = [threading.Thread(target=drain, args=(a,)) for a in agents]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        holders = {
+            str(unit["id"]): str(unit["claimed_by"])
+            for unit in claims.unit_states(seeded.workspace_id, settings)
+        }
+        rows = [
+            row
+            for row in conflicts.listing(seeded.workspace_id, limit=500, settings=settings)
+            if row["detail"].get("reason") == "concurrent_claim"
+        ]
+
+        assert rows, "a six-agent race logged no conflicts at all"
+        for row in rows:
+            unit_id = row["detail"]["unit_id"]
+            winner = row["detail"]["winner"]
+            loser = row["detail"]["loser"]
+            assert winner != loser, "an agent cannot lose a race to itself"
+            assert holders[unit_id] == winner, (
+                f"conflict names {winner} as winner of {unit_id}, "
+                f"but it is held by {holders[unit_id]}"
+            )

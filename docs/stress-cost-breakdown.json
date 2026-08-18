@@ -1,0 +1,167 @@
+{
+  "agents": 8,
+  "iterations": 60,
+  "units": 16,
+  "claims_per_second": {
+    "naive_unsafe": 236.1,
+    "safe_without_detection": 40.0,
+    "safe_with_detection": 32.8
+  },
+  "slowdown_vs_naive": {
+    "correctness_only": 5.9,
+    "correctness_plus_observability": 7.2
+  },
+  "observability_share": {
+    "extra_slowdown_from_detection": 1.22,
+    "note": "Detection is one extra unlocked read per claim. It buys the conflict feed and costs nothing in correctness, so it can be sampled or disabled under load via QUORUM_CONFLICT_DETECTION."
+  },
+  "correctness": {
+    "naive_duplicate_claims": 4112,
+    "safe_without_detection_duplicate_claims": 0,
+    "safe_with_detection_duplicate_claims": 0
+  },
+  "conflicts_logged": {
+    "naive": 0,
+    "safe_without_detection": 0,
+    "safe_with_detection": 1290
+  },
+  "runs": {
+    "naive": {
+      "mode": "naive",
+      "agents": 8,
+      "units": 16,
+      "iterations": 60,
+      "barrier": false,
+      "detect_contention": true,
+      "ok": false,
+      "total_claims": 5072,
+      "duplicate_claims": 4112,
+      "iterations_with_duplicates": 60,
+      "unclaimed_units": 0,
+      "txn_retries": 0,
+      "max_retries_single_claim": 0,
+      "max_agents_on_one_unit": 8,
+      "conflicts_logged": 0,
+      "max_losers_on_one_unit": 0,
+      "conflicts_on_hottest_unit": 0,
+      "duration_s": 21.48,
+      "claims_per_second": 236.1,
+      "samples": [
+        {
+          "iteration": 0,
+          "unit_id": "ea344ae0-7e4b-464d-ac1e-1562302ebe29",
+          "agents": [
+            "stress-agent-1",
+            "stress-agent-0",
+            "stress-agent-4",
+            "stress-agent-6",
+            "stress-agent-2",
+            "stress-agent-5",
+            "stress-agent-3",
+            "stress-agent-7"
+          ]
+        },
+        {
+          "iteration": 1,
+          "unit_id": "ea344ae0-7e4b-464d-ac1e-1562302ebe29",
+          "agents": [
+            "stress-agent-2",
+            "stress-agent-4",
+            "stress-agent-6",
+            "stress-agent-5",
+            "stress-agent-7",
+            "stress-agent-3",
+            "stress-agent-1",
+            "stress-agent-0"
+          ]
+        },
+        {
+          "iteration": 2,
+          "unit_id": "ea344ae0-7e4b-464d-ac1e-1562302ebe29",
+          "agents": [
+            "stress-agent-7",
+            "stress-agent-6",
+            "stress-agent-4",
+            "stress-agent-3",
+            "stress-agent-2",
+            "stress-agent-5",
+            "stress-agent-0",
+            "stress-agent-1"
+          ]
+        },
+        {
+          "iteration": 3,
+          "unit_id": "ea344ae0-7e4b-464d-ac1e-1562302ebe29",
+          "agents": [
+            "stress-agent-7",
+            "stress-agent-3",
+            "stress-agent-1",
+            "stress-agent-0",
+            "stress-agent-5",
+            "stress-agent-2",
+            "stress-agent-6",
+            "stress-agent-4"
+          ]
+        },
+        {
+          "iteration": 4,
+          "unit_id": "ea344ae0-7e4b-464d-ac1e-1562302ebe29",
+          "agents": [
+            "stress-agent-5",
+            "stress-agent-4",
+            "stress-agent-6",
+            "stress-agent-0",
+            "stress-agent-2",
+            "stress-agent-1",
+            "stress-agent-3",
+            "stress-agent-7"
+          ]
+        }
+      ]
+    },
+    "safe_no_detection": {
+      "mode": "safe",
+      "agents": 8,
+      "units": 16,
+      "iterations": 60,
+      "barrier": false,
+      "detect_contention": false,
+      "ok": true,
+      "total_claims": 960,
+      "duplicate_claims": 0,
+      "iterations_with_duplicates": 0,
+      "unclaimed_units": 0,
+      "txn_retries": 0,
+      "max_retries_single_claim": 0,
+      "max_agents_on_one_unit": 1,
+      "conflicts_logged": 0,
+      "max_losers_on_one_unit": 0,
+      "conflicts_on_hottest_unit": 0,
+      "duration_s": 24.0,
+      "claims_per_second": 40.0,
+      "samples": []
+    },
+    "safe_with_detection": {
+      "mode": "safe",
+      "agents": 8,
+      "units": 16,
+      "iterations": 60,
+      "barrier": false,
+      "detect_contention": true,
+      "ok": true,
+      "total_claims": 960,
+      "duplicate_claims": 0,
+      "iterations_with_duplicates": 0,
+      "unclaimed_units": 0,
+      "txn_retries": 0,
+      "max_retries_single_claim": 0,
+      "max_agents_on_one_unit": 1,
+      "conflicts_logged": 1290,
+      "max_losers_on_one_unit": 7,
+      "conflicts_on_hottest_unit": 419,
+      "duration_s": 29.23,
+      "claims_per_second": 32.8,
+      "samples": []
+    }
+  }
+}
