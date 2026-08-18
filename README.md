@@ -51,8 +51,8 @@ Built in phases. This is what currently runs end to end:
 | 1 | Foundation: schema, migrations, decomposition, seeding, local cluster | **done** |
 | 2 | Claim engine: leases, heartbeats, expiry reclaim, contention log | **done** |
 | 3 | Real agents on Amazon Bedrock | **done** (unverified against a live AWS account) |
-| 4 | Semantic conflict: embeddings, vector search, reconciliation | next |
-| 5 | Invalidation cascade | planned |
+| 4 | Semantic conflict: embeddings, vector search, reconciliation | **done** |
+| 5 | Invalidation cascade | next |
 | 6 | CockroachDB Cloud Managed MCP Server for agent reads | planned |
 | 7 | Dashboard | planned |
 | 8 | Cloud profile: CockroachDB Cloud, Lambda, S3 | planned |
@@ -320,6 +320,7 @@ quorum reap demo                     # return expired leases to the pool
 
 quorum bedrock check                 # probe both Bedrock endpoints separately
 quorum findings demo --invalidating  # discoveries that affect other work
+quorum decisions demo                # decisions, and any scope holding two
 
 quorum stress demo --agents 8 --iterations 200 --mode safe
 quorum stress demo-naive --agents 8 --iterations 25 --mode naive --barrier
@@ -334,7 +335,7 @@ The DB Console is at <http://127.0.0.1:8080> while the local cluster is running.
 ### Tests and lint
 
 ```bash
-pytest                    # 167 tests; integration tests skip if no cluster is up
+pytest                    # 194 tests; integration tests skip if no cluster is up
 pytest -m "not integration"
 ruff check .
 ```
@@ -363,6 +364,8 @@ implementation, not a hardcoded assumption. See
 
 ```
 src/quorum/
+  decisions.py         the semantic guard: ANN pre-check, classify, supersede
+  classifier.py        the judge: agrees | contradicts | unrelated
   llm.py               Bedrock (two clients) and the deterministic stub backend
   migration.py         the work itself: prompt, parse, diff, finding
   artifacts.py         result storage: local filesystem or S3

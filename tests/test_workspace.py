@@ -104,7 +104,7 @@ def test_failed_seed_leaves_nothing_behind(clean_workspaces, tiny_task_spec, mon
     class DuplicateEdgeDecomposer:
         name = "duplicate_edges"
 
-        def decompose(self, task_spec):  # noqa: ARG002 -- signature is the protocol
+        def decompose(self, task_spec):
             units = [
                 WorkUnitSpec(target="a.py", spec={"kind": "stub"}),
                 WorkUnitSpec(target="b.py", spec={"kind": "stub"}),
@@ -137,7 +137,7 @@ def test_empty_decomposition_is_refused(clean_workspaces, tiny_task_spec, monkey
     class EmptyDecomposer:
         name = "empty"
 
-        def decompose(self, task_spec):  # noqa: ARG002 -- signature is the protocol
+        def decompose(self, task_spec):
             return Decomposition(units=[], deps=[])
 
     monkeypatch.setattr("quorum.workspace.get_decomposer", lambda _name: EmptyDecomposer())

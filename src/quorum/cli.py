@@ -248,6 +248,58 @@ def findings(
 
 
 @app.command()
+def decisions(
+    workspace: Annotated[str, typer.Argument(help="Workspace id or name.")],
+    scope: Annotated[str | None, typer.Option("--scope", help="Filter to one scope.")] = None,
+    active_only: Annotated[
+        bool, typer.Option("--active", help="Hide superseded decisions.")
+    ] = False,
+    limit: Annotated[int, typer.Option("--limit")] = 30,
+) -> None:
+    """Cross-cutting decisions, and any scope still holding two of them."""
+    from quorum import decisions as decision_log
+    from quorum.workspace import resolve_workspace
+
+    found = resolve_workspace(workspace)
+    rows = decision_log.listing(
+        found["id"], scope=scope, include_superseded=not active_only, limit=limit
+    )
+    if not rows:
+        console.print("no decisions recorded")
+        return
+
+    table = Table(title="decisions")
+    table.add_column("recorded")
+    table.add_column("scope")
+    table.add_column("status")
+    table.add_column("statement")
+    for row in rows:
+        status = str(row["status"])
+        marker = "[green]active[/green]" if status == "active" else "[dim]superseded[/dim]"
+        table.add_row(
+            row["created_at"].strftime("%H:%M:%S"),
+            str(row["scope"]),
+            marker,
+            str(row["statement"])[:80],
+        )
+    console.print(table)
+
+    # In safe mode this is always empty. In naive mode it is the corruption.
+    outstanding = decision_log.contradictions_outstanding(found["id"])
+    if not outstanding:
+        console.print("[green]no scope holds conflicting active decisions[/green]")
+        return
+
+    err_console.print(
+        f"[red]{len(outstanding)} scope(s) hold more than one active decision[/red]"
+    )
+    for row in outstanding:
+        err_console.print(f"  [red]{row['scope']}[/red] -- {row['active_decisions']} active:")
+        for statement in row["statements"]:
+            err_console.print(f"      {str(statement)[:88]}")
+
+
+@app.command()
 def decompose(
     task: Annotated[Path, typer.Argument(help="Task spec JSON file.")] = DEFAULT_TASK,
     show_units: Annotated[bool, typer.Option("--units", help="List every work unit.")] = False,

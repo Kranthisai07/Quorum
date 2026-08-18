@@ -123,6 +123,19 @@ class LLMBackend(Protocol):
     def health(self) -> HealthReport:
         ...
 
+    @property
+    def similarity_threshold(self) -> float:
+        """Cosine similarity above which two decisions are worth classifying.
+
+        Owned by the backend, not by global config, because it is a property of
+        the *embedding model*. Titan produces normalised semantic vectors where
+        0.82 means "about the same thing". The stub produces lexical vectors on
+        a completely different scale -- a directly opposed pair scores 0.37
+        there. One shared constant across both is not a tuning problem, it is a
+        correctness bug: the guard silently stops classifying anything.
+        """
+        ...
+
 
 class StubBackend:
     """Deterministic offline backend. No credentials, no spend, no flakiness.
@@ -162,6 +175,19 @@ class StubBackend:
             model="stub",
             input_tokens=len(text) // 4,
         )
+
+    @property
+    def similarity_threshold(self) -> float:
+        """Zero: consider every active decision in the scope.
+
+        The stub's lexical similarity cannot be trusted to *rank* opposition --
+        an opposed pair can score below an unrelated one, since opposition is
+        about meaning and this measures shared words. So it does not threshold
+        at all; `scope` does the narrowing, and the (free, offline) heuristic
+        classifier looks at each candidate. With a real embedding model the
+        threshold does real work and this becomes 0.82.
+        """
+        return 0.0
 
     def health(self) -> HealthReport:
         vector = self.embed("health check")
@@ -301,6 +327,10 @@ class BedrockBackend:
             model=self.settings.bedrock_embed_model,
             input_tokens=int(payload.get("inputTextTokenCount", 0)),
         )
+
+    @property
+    def similarity_threshold(self) -> float:
+        return self.settings.semantic_threshold
 
     def health(self) -> HealthReport:
         """Exercise both endpoints independently and report which one failed."""

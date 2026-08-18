@@ -44,6 +44,23 @@ def _redirect_to_test_database() -> None:
     get_settings.cache_clear()
 
 
+def _force_offline_backend() -> None:
+    """Pin the suite to the stub backend.
+
+    Tests must never need AWS credentials and must never spend money. A `.env`
+    configured for Bedrock -- as it is once the project is wired up for real --
+    would otherwise make `pytest` issue paid API calls: slow, flaky, and
+    billable. Tests that exercise Bedrock wiring construct the backend
+    explicitly instead.
+    """
+    os.environ["QUORUM_LLM_BACKEND"] = "stub"
+    get_settings.cache_clear()
+
+
+_redirect_to_test_database()
+_force_offline_backend()
+
+
 _redirect_to_test_database()
 
 
