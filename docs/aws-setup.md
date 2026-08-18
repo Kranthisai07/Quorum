@@ -30,23 +30,42 @@ in that case leave the two key lines empty and set `AWS_PROFILE` instead.
 
 ## 2. Bedrock model access
 
-**This is the step that is easy to miss.** Having valid credentials does not
-mean you can call a model: access is granted per model, per region, in the
-console.
+**AWS retired the "Model access" page.** Serverless foundation models are now
+enabled automatically, per account, in every commercial region, the first time
+you invoke them. There is no longer a list of checkboxes to tick, and older
+guides telling you to "request model access" are describing a console page that
+no longer exists.
 
-1. AWS Console → **Amazon Bedrock** → **Model access** (make sure the region
-   selector says the region in your `.env`).
-2. Request access to:
-   - **Anthropic — Claude** (the model in `QUORUM_BEDROCK_TEXT_MODEL`)
-   - **Amazon — Titan Text Embeddings V2**
-3. Titan is normally granted instantly. Anthropic models are usually instant
-   too, but some are gated.
+Two things still gate you, and only one is likely to bite:
 
-### If Claude Opus 5 is not available in your account
+### Anthropic models may ask for use-case details
 
-`anthropic.claude-opus-5` has per-account access criteria. Claude Opus 4.8,
-Claude Sonnet 5, and Claude Haiku 4.5 are open to all Bedrock customers, so any
-of these is a drop-in change to one line of `.env`:
+First-time users of Anthropic models may have to submit a short use-case form
+before the model will answer. Nothing surfaces this from the API -- a call just
+fails with `AccessDenied` -- so clear it from the console *before* wiring up
+credentials:
+
+1. Console → **Bedrock** → **Model catalog** → pick the Claude model in
+   `QUORUM_BEDROCK_TEXT_MODEL`.
+2. Open it in the **playground** and send one message.
+3. If a use-case form appears, fill it in. Approval is usually immediate.
+
+That single playground message doubles as the "first invocation" that enables
+the model account-wide, so it settles both questions at once. Titan embeddings
+have no such gate and enable silently.
+
+### Marketplace-served models need one privileged invocation
+
+Models served through AWS Marketplace need a user with AWS Marketplace
+permissions to invoke them once, which enables them account-wide for everyone
+else. Neither Claude nor Titan is affected on a standard account; this matters
+only in an organisation where a restricted role is the first to call a
+Marketplace model.
+
+### If Claude Opus 5 is not available on your account
+
+Claude Opus 4.8, Sonnet 5, and Haiku 4.5 are open to all Bedrock customers, so
+any of these is a one-line change:
 
 ```ini
 QUORUM_BEDROCK_TEXT_MODEL=anthropic.claude-opus-4-8
@@ -54,9 +73,7 @@ QUORUM_BEDROCK_TEXT_MODEL=anthropic.claude-opus-4-8
 # or anthropic.claude-haiku-4-5   (cheapest; fine for the classifier)
 ```
 
-Nothing else in the codebase changes — the model id is configuration.
-
----
+Nothing else in the codebase changes -- the model id is configuration.
 
 ## 3. IAM permissions
 
@@ -121,7 +138,7 @@ Read the failures literally — each names its own endpoint:
 |---|---|
 | `Could not resolve AWS credentials from session` | No credentials reached the Claude client. Check `.env`. |
 | `Unable to locate credentials` | Same, from boto3. |
-| `AccessDeniedException` on the text path | Credentials fine; missing `bedrock-mantle:CreateInference`, or model access not granted. |
+| `AccessDeniedException` on the text path | Credentials fine. Either the IAM policy is missing `bedrock-mantle:CreateInference`, or Anthropic's first-use gate has not been cleared — open the model in the Bedrock playground once (see §2). |
 | `AccessDeniedException` on the embed path | Credentials fine; missing `bedrock:InvokeModel` on the Titan model. |
 | `ValidationException` naming the model id | Wrong id, or the model is not offered in this region. |
 | **`dimensions … MISMATCH`** | Titan returned a width the schema does not have. Fix `QUORUM_EMBED_DIM`, or add a migration changing `VECTOR(n)`. **Resolve before Phase 4** — the semantic conflict index depends on it. |
