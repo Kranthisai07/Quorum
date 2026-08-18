@@ -260,6 +260,9 @@ detection.
 Local development requires none of them: `QUORUM_LLM_BACKEND=stub`,
 `QUORUM_ARTIFACT_BACKEND=local`, `QUORUM_RUNNER=local`.
 
+Turning the real thing on — credentials, per-model Bedrock access, and a
+least-privilege IAM policy — is documented in [docs/aws-setup.md](docs/aws-setup.md).
+
 ---
 
 ## Setup
