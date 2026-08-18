@@ -198,6 +198,17 @@ def bedrock_check(
             f"VECTOR({report.expected_dimensions}) in schema  {dim_mark}"
         )
 
+    for model_id, gates in report.gates.items():
+        if not gates:
+            continue
+        rendered = "  ".join(
+            f"{name}={'[green]' if value in ('AVAILABLE', 'AUTHORIZED') else '[red]'}"
+            f"{value}[/]"
+            for name, value in gates.items()
+        )
+        console.print(f"  gates         {model_id}")
+        console.print(f"                {rendered}")
+
     for note in report.notes:
         console.print(f"  [dim]note[/dim]  {note}")
     for error in report.errors:

@@ -132,6 +132,40 @@ backend  bedrock
   dimensions    1024 vs VECTOR(1024) in schema  match
 ```
 
+### The four access gates
+
+Bedrock answers an unauthorised call with `not available for this account`,
+which is **four different problems wearing one message**. `quorum bedrock check`
+queries `GetFoundationModelAvailability` and reports which gate actually failed:
+
+| Gate | Meaning when it fails | Fix |
+|---|---|---|
+| `region` | The model is not offered in this region | Change `AWS_REGION`, or pick a model that is offered there |
+| `authorization` | Your IAM policy does not allow this model | Add `bedrock-mantle:CreateInference` / `bedrock:InvokeModel` on the model ARN |
+| `entitlement` | The account is not entitled to the model | Some models are gated per account; pick an open one |
+| `agreement` | The provider's use-case agreement is not accepted | Open the model in the Bedrock playground and submit the use-case form |
+
+Example of a real diagnosis — everything green except the last, so the use-case
+form is the only blocker and no amount of IAM editing will help:
+
+```
+gates  anthropic.claude-opus-5
+       region=AVAILABLE  authorization=AUTHORIZED
+       entitlement=AVAILABLE  agreement=NOT_AVAILABLE
+```
+
+Note that `ListFoundationModels` is not a substitute for this. It lists models
+that *exist*, with `ACTIVE` status, regardless of whether your account may call
+them — `anthropic.claude-opus-5` shows as `ACTIVE` while returning 403.
+
+### Throttling on a new account
+
+`ThrottlingException` on every attempt, with no successful call, is usually not
+rate limiting -- it is a brand-new account whose Bedrock quotas have not been
+provisioned yet. Check the four gates first: if they are all green and calls
+still throttle, wait and retry rather than changing anything. Quotas normally
+appear within a few hours of account activation.
+
 Read the failures literally — each names its own endpoint:
 
 | Message | Meaning |

@@ -78,6 +78,7 @@ class HealthReport:
     embed_ok: bool = False
     embed_dimensions: int | None = None
     expected_dimensions: int | None = None
+    gates: dict[str, dict[str, str]] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
@@ -100,6 +101,7 @@ class HealthReport:
             "embed_dimensions": self.embed_dimensions,
             "expected_dimensions": self.expected_dimensions,
             "dimensions_match": self.dimensions_match,
+            "gates": self.gates,
             "ok": self.ok,
             "errors": self.errors,
             "notes": self.notes,
@@ -332,6 +334,32 @@ class BedrockBackend:
     def similarity_threshold(self) -> float:
         return self.settings.semantic_threshold
 
+    def model_gates(self, model_id: str) -> dict[str, str]:
+        """Which of Bedrock's four access gates this model has cleared.
+
+        A 403 from Bedrock says only "not available for this account", which is
+        four different problems wearing one message: the model is not offered in
+        this region, IAM does not authorise it, the account is not entitled, or
+        the provider's use-case agreement has not been accepted. Reporting the
+        gate that actually failed is the difference between a one-click fix and
+        an afternoon.
+        """
+        try:
+            import boto3
+
+            client = boto3.client("bedrock", region_name=self.settings.aws_region)
+            response = client.get_foundation_model_availability(modelId=model_id)
+        except Exception as exc:
+            return {"lookup": f"unavailable ({type(exc).__name__})"}
+
+        agreement = response.get("agreementAvailability", {})
+        return {
+            "region": str(response.get("regionAvailability", "?")),
+            "authorization": str(response.get("authorizationStatus", "?")),
+            "entitlement": str(response.get("entitlementAvailability", "?")),
+            "agreement": str(agreement.get("status", "?")),
+        }
+
     def health(self) -> HealthReport:
         """Exercise both endpoints independently and report which one failed."""
         report = HealthReport(
@@ -341,6 +369,25 @@ class BedrockBackend:
             embed_model=self.settings.bedrock_embed_model,
             expected_dimensions=self.settings.embed_dim,
         )
+
+        report.gates[self.settings.bedrock_text_model] = self.model_gates(
+            self.settings.bedrock_text_model
+        )
+        report.gates[self.settings.bedrock_embed_model] = self.model_gates(
+            self.settings.bedrock_embed_model
+        )
+        for model_id, gates in report.gates.items():
+            if gates.get("agreement") == "NOT_AVAILABLE":
+                report.notes.append(
+                    f"{model_id}: provider use-case agreement not accepted. Every "
+                    f"other gate is clear, so this is the only blocker -- accept it "
+                    f"in the Bedrock console (Model catalog -> the model -> "
+                    f"playground) and re-run."
+                )
+            elif gates.get("authorization") not in (None, "AUTHORIZED", "?"):
+                report.notes.append(f"{model_id}: IAM does not authorise this model.")
+            elif gates.get("entitlement") == "NOT_AVAILABLE":
+                report.notes.append(f"{model_id}: account is not entitled to this model.")
 
         try:
             completion = self.complete("Reply with the single word: ready.", max_tokens=16)
