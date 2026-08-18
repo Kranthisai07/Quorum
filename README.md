@@ -35,8 +35,10 @@ distributed vector index as the coordination primitive.
 > It is the concurrency control.
 >
 > That claim is testable, and Quorum ships the test: every workspace runs in
-> `safe` or `naive` mode, and `quorum compare` runs the same task, same agents,
-> same seed, in both.
+> `safe` or `naive` mode, and `quorum stress` runs the same scenario, same
+> agents, same workspace, in both — with the results below. A single
+> `quorum compare` command that diffs a *full task run* across both modes is
+> Phase 9 and is not built yet.
 
 ---
 
