@@ -1,0 +1,22 @@
+# Local tooling / data (not source)
+.tools/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+dist/
+build/
+
+# Local runtime artifacts
+.quorum/
+artifacts/
+reports/
+*.log
+
+# Secrets
+.env
+.env.local

@@ -1,0 +1,15 @@
+{
+  "name": "docker-py-requests-to-httpx",
+  "kind": "code_migration",
+  "description": "Migrate docker-py off the deprecated requests dependency onto httpx, preserving public API behaviour.",
+  "repo": "fixtures/docker-py",
+  "package_roots": ["docker"],
+  "exclude": ["tests", "docs"],
+  "from_library": "requests",
+  "to_library": "httpx",
+  "constraints": [
+    "Public API of the docker package must not change.",
+    "Unix socket, npipe and SSH transports must keep working.",
+    "Exception types raised to callers must remain importable from docker.errors."
+  ]
+}

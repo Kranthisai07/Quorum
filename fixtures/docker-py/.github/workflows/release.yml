@@ -1,0 +1,61 @@
+name: release
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release Tag WITHOUT `v` Prefix (e.g. 6.0.0)"
+        required: true
+      dry-run:
+        description: 'Dry run'
+        required: false
+        type: boolean
+        default: true
+
+env:
+  DOCKER_BUILDKIT: '1'
+  FORCE_COLOR: 1
+
+jobs:
+  publish:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write # to create GitHub release
+    steps:
+      -
+        name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      -
+        name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.x'
+      -
+        name: Generate Package
+        run: |
+          pip3 install build
+          python -m build .
+        env:
+          # This is also supported by Hatch; see
+          # https://github.com/ofek/hatch-vcs#version-source-environment-variables
+          SETUPTOOLS_SCM_PRETEND_VERSION: ${{ inputs.tag }}
+      -
+        name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
+        if: '! inputs.dry-run'
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
+      -
+        name: Create GitHub release
+        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
+        if: '! inputs.dry-run'
+        with:
+          files: dist/*
+          generate_release_notes: true
+          draft: true
+          target_commitish: ${{ github.sha }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag_name: ${{ inputs.tag }}
