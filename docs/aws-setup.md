@@ -54,6 +54,35 @@ That single playground message doubles as the "first invocation" that enables
 the model account-wide, so it settles both questions at once. Titan embeddings
 have no such gate and enable silently.
 
+### Accepting the agreement needs Marketplace permissions, not Bedrock ones
+
+The Anthropic agreement is an **AWS Marketplace offer** (its ARN looks like
+`arn:aws:catalog:us-east-1::offer/offer-...`). Accepting it therefore needs
+Marketplace rights, which `AmazonBedrockFullAccess` does not grant. An IAM user
+scoped for inference hits `AccessDeniedException` on this step even though every
+Bedrock permission it needs is present.
+
+**Accept it once as the account root user**, in the console. That is the right
+principal for a commercial agreement, it is a one-time account-wide action, and
+it leaves the inference user scoped to inference — which is where you want it.
+Afterwards the restricted key works with no policy change at all.
+
+If you would rather grant it to an IAM user instead, the missing actions are:
+
+```json
+{
+  "Effect": "Allow",
+  "Action": [
+    "aws-marketplace:Subscribe",
+    "aws-marketplace:ViewSubscriptions"
+  ],
+  "Resource": "*"
+}
+```
+
+Note that `aws-marketplace:Subscribe` cannot be scoped to a single model, which
+is a good reason to prefer the root-once approach and keep it off the dev user.
+
 ### Marketplace-served models need one privileged invocation
 
 Models served through AWS Marketplace need a user with AWS Marketplace
