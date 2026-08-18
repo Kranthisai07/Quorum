@@ -267,6 +267,209 @@ def workspaces() -> None:
 
 
 @app.command()
+def run(
+    workspace: Annotated[str, typer.Argument(help="Workspace id or name.")],
+    agents: Annotated[int, typer.Option("--agents", "-n", help="Concurrent agents.")] = 4,
+    mode: Annotated[
+        str | None, typer.Option("--mode", help="Override the workspace mode.")
+    ] = None,
+    work_seconds: Annotated[
+        float, typer.Option("--work-seconds", help="Stub work time per unit.")
+    ] = 0.05,
+    max_units: Annotated[
+        int | None, typer.Option("--max-units", help="Stop each agent after N claims.")
+    ] = None,
+    transport: Annotated[
+        str, typer.Option("--transport", help="thread or process.")
+    ] = "thread",
+    seed: Annotated[int | None, typer.Option("--seed", help="Reproducible stub work.")] = None,
+) -> None:
+    """Run stub agents against a workspace until it is drained."""
+    from quorum.runner import run as run_agents
+
+    report = run_agents(
+        workspace,
+        agents=agents,
+        mode=mode,
+        max_units=max_units,
+        work_seconds=work_seconds,
+        seed=seed,
+        transport=transport,  # type: ignore[arg-type]
+    )
+
+    console.print(f"[bold]run complete[/bold]  mode={report.mode}  agents={report.agents}")
+    console.print(f"  claimed          {report.total_claimed}")
+    console.print(f"  completed        {report.total_completed}")
+    console.print(f"  txn retries      {report.total_retries}")
+    console.print(f"  contended claims {report.total_contended}")
+    console.print(f"  stale writes     {report.total_stale_writes}")
+    console.print(f"  duration         {report.duration_s:.2f}s")
+
+    if report.errors:
+        err_console.print(f"[red]{len(report.errors)} worker(s) crashed[/red]")
+        for failure in report.errors[:5]:
+            err_console.print(f"    {failure['agent']}: {failure['error']}")
+
+    duplicates = report.duplicate_claims
+    if duplicates:
+        err_console.print(
+            f"[red]DOUBLE-CLAIMED {len(duplicates)} unit(s)[/red] -- "
+            f"expected under --mode naive, a bug under safe"
+        )
+        for unit_id, holders in list(duplicates.items())[:5]:
+            err_console.print(f"    {unit_id} -> {', '.join(holders)}")
+    else:
+        console.print("  [green]no double-claims[/green]")
+
+    if report.errors:
+        raise typer.Exit(1)
+
+
+@app.command()
+def stress(
+    workspace: Annotated[str, typer.Argument(help="Workspace id or name.")],
+    agents: Annotated[int, typer.Option("--agents", "-n", help="Concurrent agents.")] = 8,
+    iterations: Annotated[int, typer.Option("--iterations", "-i")] = 200,
+    mode: Annotated[str, typer.Option("--mode", help="safe or naive.")] = "safe",
+    barrier: Annotated[
+        bool,
+        typer.Option(
+            "--barrier/--no-barrier",
+            help="Hold naive agents at their TOCTOU window so the race is deterministic.",
+        ),
+    ] = False,
+    report_path: Annotated[
+        Path | None, typer.Option("--report", help="Write the JSON report here.")
+    ] = None,
+) -> None:
+    """Contend N agents over one workspace many times and report what happened."""
+    from quorum.stress import run_stress
+    from quorum.workspace import resolve_workspace
+
+    found = resolve_workspace(workspace)
+    result = run_stress(
+        found["id"], agents=agents, iterations=iterations, mode=mode, barrier=barrier
+    )
+
+    colour = "green" if result.ok else "red"
+    console.print(f"[{colour}]{result.summary()}[/{colour}]")
+
+    table = Table(title=f"claim stress -- {mode}")
+    table.add_column("metric")
+    table.add_column("value", justify="right")
+    for key, value in result.to_dict().items():
+        if key != "samples":
+            table.add_row(key, str(value))
+    console.print(table)
+
+    for sample in result.samples[:5]:
+        err_console.print(
+            f"  [red]duplicate[/red] iteration {sample['iteration']} "
+            f"unit {sample['unit_id']} -> {', '.join(sample['agents'])}"
+        )
+
+    if report_path is not None:
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text(json.dumps(result.to_dict(), indent=2), encoding="utf-8")
+        console.print(f"  report written to {report_path}")
+
+    if mode == "safe" and not result.ok:
+        raise typer.Exit(1)
+
+
+@app.command()
+def conflicts(
+    workspace: Annotated[str, typer.Argument(help="Workspace id or name.")],
+    kind: Annotated[
+        str | None, typer.Option("--kind", help="claim, semantic, or invalidation.")
+    ] = None,
+    limit: Annotated[int, typer.Option("--limit")] = 20,
+) -> None:
+    """The conflict feed: what contended, who was involved, how it resolved."""
+    from quorum import conflicts as conflict_log
+    from quorum.workspace import resolve_workspace
+
+    found = resolve_workspace(workspace)
+    tally = conflict_log.counts(found["id"])
+    rows = conflict_log.listing(found["id"], kind=kind, limit=limit)  # type: ignore[arg-type]
+
+    console.print(f"[bold]{found['name']}[/bold]  conflicts: {tally}")
+    if not rows:
+        console.print("no conflicts recorded")
+        return
+
+    table = Table(title="conflict log")
+    table.add_column("detected")
+    table.add_column("kind")
+    table.add_column("resolution")
+    table.add_column("agents", justify="right")
+    table.add_column("detail")
+    for row in rows:
+        detail = row["detail"]
+        summary = detail.get("target") or detail.get("reason") or ""
+        table.add_row(
+            row["detected_at"].strftime("%H:%M:%S"),
+            str(row["kind"]),
+            str(row["resolution"]),
+            str(len(row["agents"] or [])),
+            f"{detail.get('reason', '')} {summary}".strip(),
+        )
+    console.print(table)
+
+
+@app.command()
+def reap(
+    workspace: Annotated[str, typer.Argument(help="Workspace id or name.")],
+) -> None:
+    """Return expired leases to the pool. This is what unblocks a dead agent."""
+    from quorum.claims import reap_expired
+    from quorum.workspace import resolve_workspace
+
+    found = resolve_workspace(workspace)
+    reclaimed = reap_expired(found["id"])
+    if not reclaimed:
+        console.print("no expired leases")
+        return
+    console.print(f"[yellow]reclaimed {len(reclaimed)} unit(s)[/yellow]")
+    for unit in reclaimed:
+        console.print(f"  {unit['target']}  -> version {unit['version']}")
+
+
+@app.command()
+def agents(
+    workspace: Annotated[str, typer.Argument(help="Workspace id or name.")],
+) -> None:
+    """Agent sessions and the units they currently hold."""
+    from quorum.claims import unit_states
+    from quorum.sessions import live
+    from quorum.workspace import resolve_workspace
+
+    found = resolve_workspace(workspace)
+    running = live(found["id"])
+    held = Counter(
+        str(u["claimed_by"]) for u in unit_states(found["id"]) if u["status"] == "claimed"
+    )
+
+    if not running:
+        console.print("no live agent sessions")
+        return
+
+    table = Table(title="agent sessions")
+    table.add_column("name")
+    table.add_column("id")
+    table.add_column("holding", justify="right")
+    table.add_column("last heartbeat")
+    for row in running:
+        table.add_row(
+            str(row["name"]),
+            str(row["id"]),
+            str(held.get(str(row["id"]), 0)),
+            row["heartbeat_at"].strftime("%H:%M:%S"),
+        )
+    console.print(table)
+
+
+@app.command()
 def status(
     workspace: Annotated[str, typer.Argument(help="Workspace id or name.")],
 ) -> None:

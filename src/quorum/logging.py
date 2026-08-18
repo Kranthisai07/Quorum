@@ -16,6 +16,7 @@ import time
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any
 
 _RESERVED = frozenset(
@@ -27,7 +28,12 @@ _RESERVED = frozenset(
 _OVERFLOW = "quorum_fields"
 
 # Fields attached to every record emitted inside a `log_context` block.
-_context: dict[str, Any] = {}
+#
+# A ContextVar, not a plain dict: the local runner runs several agents as
+# threads in one process, and a process-global dict made every one of them log
+# the last-registered session id. Attributing an agent's work to the wrong agent
+# is not a cosmetic bug in a system whose output is a contention audit trail.
+_context: ContextVar[dict[str, Any] | None] = ContextVar("quorum_log_context", default=None)
 
 
 class QuorumLogger(logging.Logger):
@@ -79,7 +85,7 @@ class JsonFormatter(logging.Formatter):
             "event": record.getMessage(),
             "pid": os.getpid(),
         }
-        payload.update(_context)
+        payload.update(_context.get() or {})
         payload.update(_record_fields(record))
         if record.exc_info:
             payload["exc"] = self.formatException(record.exc_info)
@@ -90,7 +96,7 @@ class ConsoleFormatter(logging.Formatter):
     """Human-readable fallback for interactive debugging."""
 
     def format(self, record: logging.LogRecord) -> str:
-        extras = dict(_context)
+        extras = dict(_context.get() or {})
         extras.update(_record_fields(record))
         tail = " ".join(f"{k}={v}" for k, v in extras.items())
         base = f"{record.levelname:<5} {record.name} {record.getMessage()}"
@@ -136,10 +142,9 @@ def log_context(**fields: Any) -> Iterator[None]:
     Used to tag an agent's whole lifecycle with its workspace and session id
     without threading them through every call site.
     """
-    previous = dict(_context)
-    _context.update({k: _coerce(v) for k, v in fields.items()})
+    merged = {**(_context.get() or {}), **{k: _coerce(v) for k, v in fields.items()}}
+    token = _context.set(merged)
     try:
         yield
     finally:
-        _context.clear()
-        _context.update(previous)
+        _context.reset(token)

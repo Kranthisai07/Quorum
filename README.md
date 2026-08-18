@@ -29,8 +29,8 @@ Built in phases. This is what currently runs end to end:
 | Phase | Scope | State |
 |---|---|---|
 | 1 | Foundation: schema, migrations, decomposition, seeding, local cluster | **done** |
-| 2 | Claim engine: leases, heartbeats, expiry reclaim, contention log | next |
-| 3 | Real agents on Amazon Bedrock | planned |
+| 2 | Claim engine: leases, heartbeats, expiry reclaim, contention log | **done** |
+| 3 | Real agents on Amazon Bedrock | next |
 | 4 | Semantic conflict: embeddings, vector search, reconciliation | planned |
 | 5 | Invalidation cascade | planned |
 | 6 | CockroachDB Cloud Managed MCP Server for agent reads | planned |
@@ -38,8 +38,8 @@ Built in phases. This is what currently runs end to end:
 | 8 | Cloud profile: CockroachDB Cloud, Lambda, S3 | planned |
 | 9 | Demo harness, including a `ccloud` node kill | planned |
 
-Phase 1 is honest about its scope: it builds the shared memory and proves the
-*seed* is atomic. The three conflicts land in phases 2, 4, and 5.
+Phase 2 proves conflict #1 under contention. Conflicts #2 and #3 land in
+phases 4 and 5, and this table will say `planned` until they do.
 
 ---
 
@@ -53,6 +53,38 @@ lease is reclaimable, so an agent that dies mid-claim cannot deadlock the
 workspace. Every contended claim is written to `conflict_log`, because
 contention that is merely *handled* is invisible, and invisible contention
 convinces nobody.
+
+**Proven, not asserted.** `quorum stress` runs this scenario hundreds of times
+in both modes. 8 agents, 16 units, deterministic ordering so every agent goes
+for the *same* row:
+
+| | `safe` | `naive` | `naive` (no barrier) |
+|---|---|---|---|
+| Iterations | 200 | 25 | 50 |
+| Claims | 3,200 | 1,384 | 2,797 |
+| **Double-claims** | **0** | **984** | **1,997** |
+| Rounds with duplicates | 0 / 200 | 25 / 25 | 50 / 50 |
+| Most agents on one unit | 1 | 8 | 8 |
+| Serialization retries | 5,603 (max 5 on one claim) | 0 | 0 |
+| Conflicts logged | 5,603 | **0** | **0** |
+| Claims/sec | 39.7 | 293.3 | 291.1 |
+
+Three things in that table matter more than the zero:
+
+- **Contention was real.** 5,603 retries and up to 7 agents losing the same race
+  means safe mode was genuinely contended, not accidentally serialized.
+- **Naive never finds out.** It corrupts the workspace and logs *zero* conflicts.
+  An empty conflict feed is not evidence of a calm system.
+- **Naive is 7× faster.** That is the trade being bought: throughput for
+  correctness. Quorum reports the price rather than hiding it.
+
+The barrier column holds every naive agent at its select-then-update window so
+the race is deterministic on demand — useful for a live demo. The third column
+is the same run *without* it: the bug is entirely naive mode's own, and the
+barrier only removes the luck. Reproduce with
+`quorum stress <workspace> --agents 8 --iterations 200 --mode safe|naive`.
+Raw reports: [docs/stress-safe.json](docs/stress-safe.json),
+[docs/stress-naive.json](docs/stress-naive.json).
 
 ### 2. Semantic conflict — two agents reach contradictory conclusions
 
@@ -135,6 +167,7 @@ behaviour in [docs/production-readiness.md](docs/production-readiness.md).
 | **Partial index** | `INDEX (claim_expires_at) WHERE status = 'claimed'` lets the lease reaper find expired claims without scanning every unit. |
 | **`JSONB`** | Work unit specs and conflict details stay schemaless where the domain plugs in, indexed where the engine needs them. |
 | **`UUID[]`** | `conflict_log.agents` records exactly who was involved in each conflict. |
+| **Lock-wait vs. abort** | Under `FOR UPDATE`, most losers *block on the lock* rather than aborting with 40001. Quorum detects both shapes, because a detector that only catches aborts reports zero conflicts under heavy contention — correct behaviour, invisible evidence. |
 | **Autocommit path (deliberately)** | `naive` mode uses no transaction and no retry, giving the demo a control group that fails the way ordinary agent memory fails. |
 | **CockroachDB Cloud Managed MCP Server** | Agent *read* paths go through MCP (audited, safe by default). Writes that need isolation stay in the application layer — see the honesty note below. |
 | **`ccloud`** | Kills a node mid-run in the demo, to show agents continuing with zero lost work. |
@@ -213,6 +246,14 @@ quorum seed --name demo-naive --mode naive
 quorum workspaces                    # every workspace and its unit counts
 quorum status demo                   # units, decisions, conflicts
 
+quorum run demo --agents 8           # run stub agents until the workspace drains
+quorum agents demo                   # live sessions and what they hold
+quorum conflicts demo                # the conflict feed
+quorum reap demo                     # return expired leases to the pool
+
+quorum stress demo --agents 8 --iterations 200 --mode safe
+quorum stress demo-naive --agents 8 --iterations 25 --mode naive --barrier
+
 quorum migrate --status              # which migrations are applied
 quorum reset --yes                   # drop and rebuild the database
 quorum db down                       # stop the local cluster
@@ -223,7 +264,7 @@ The DB Console is at <http://127.0.0.1:8080> while the local cluster is running.
 ### Tests and lint
 
 ```bash
-pytest                    # 72 tests; integration tests skip if no cluster is up
+pytest                    # 107 tests; integration tests skip if no cluster is up
 pytest -m "not integration"
 ruff check .
 ```
@@ -252,6 +293,12 @@ implementation, not a hardcoded assumption. See
 
 ```
 src/quorum/
+  claims.py            the claim engine: leases, contention, reclaim
+  sessions.py          agent registration, heartbeats, liveness
+  conflicts.py         the conflict log
+  worker.py            Lambda-shaped agent entrypoint (stub agent for now)
+  runner.py            local execution: threads, or killable processes
+  stress.py            the contention harness behind the numbers above
   config.py            environment-driven settings, local vs cloud
   logging.py           structured JSON logging
   db.py                pooling, serializable + autocommit paths, retry accounting

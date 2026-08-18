@@ -183,13 +183,50 @@ def ensure_database(settings: Settings | None = None) -> str:
         settings.admin_url(), autocommit=True, connect_timeout=10
     ) as conn, conn.cursor() as cur:
         cur.execute(f"CREATE DATABASE IF NOT EXISTS {_quote_ident(database)}")
-        try:
-            cur.execute("SET CLUSTER SETTING feature.vector_index.enabled = true")
-        except psycopg.Error as exc:
-            # Removed once vector indexes went GA; absence is not an error.
-            log.debug("vector_index.setting_skipped", extra={"reason": str(exc)})
+        _enable_vector_indexes(cur)
     log.info("db.ready", extra={"database": database})
     return database
+
+
+# SQLSTATEs that make the vector-index cluster setting safe to skip.
+UNDEFINED_PARAMETER = "42P02"  # setting does not exist -- GA'd, already on
+INSUFFICIENT_PRIVILEGE = "42501"  # restricted cloud role cannot set it
+
+
+def _enable_vector_indexes(cur: psycopg.Cursor) -> None:
+    """Turn on vector indexes where the cluster still gates them.
+
+    Deliberately narrow. Only two failures mean "carry on": the setting no
+    longer exists (v26+, where vector indexes are GA and on by default), and a
+    role that is not allowed to touch cluster settings (CockroachDB Cloud, where
+    the setting is managed for us). Anything else -- a genuinely unreachable
+    cluster, an unsupported tier, a permissions problem elsewhere -- must raise
+    here rather than resurface later as a confusing CREATE VECTOR INDEX failure.
+    """
+    try:
+        cur.execute("SET CLUSTER SETTING feature.vector_index.enabled = true")
+    except psycopg.Error as exc:
+        sqlstate = getattr(exc, "sqlstate", None)
+        if sqlstate == UNDEFINED_PARAMETER:
+            log.debug(
+                "vector_index.setting_absent",
+                extra={"sqlstate": sqlstate, "detail": "GA on this cluster; nothing to enable"},
+            )
+            return
+        if sqlstate == INSUFFICIENT_PRIVILEGE:
+            log.warning(
+                "vector_index.setting_denied",
+                extra={
+                    "sqlstate": sqlstate,
+                    "detail": (
+                        "role cannot SET CLUSTER SETTING; assuming vector indexes are "
+                        "enabled by the operator. CREATE VECTOR INDEX will fail loudly "
+                        "if they are not."
+                    ),
+                },
+            )
+            return
+        raise
 
 
 def _quote_ident(name: str) -> str:

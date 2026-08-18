@@ -24,7 +24,11 @@ The expiry scan is served by a partial index —
 `INDEX (claim_expires_at) WHERE status = 'claimed'` — so reaping does not scan
 the workspace.
 
-*State: schema and index in place (phase 1); reaper and heartbeat loop in phase 2.*
+*State: **implemented** (phase 2). Proven by `test_dead_agent_loses_no_work_and_blocks_nobody`,
+which SIGKILLs a real worker process holding a lease, asserts the unit is *not*
+stolen while the lease is still live, then asserts it is reclaimed and finished
+by another agent once the lease lapses — with the reclaim recorded in
+`conflict_log`.*
 
 ### A CockroachDB node dies
 
@@ -41,11 +45,13 @@ implemented (`db.run_serializable`); the demo kill is phase 9.*
 
 ### Two agents claim the same unit
 
-Exactly one wins. The loser gets SQLSTATE `40001`, retries the whole
-transaction, and takes a different unit. Both sides are recorded in
-`conflict_log` so the contention is visible.
+Exactly one wins. The loser either aborts with SQLSTATE `40001` and replays, or
+— more often — blocks on the `FOR UPDATE` lock and finds the row taken when it
+is let through. Both shapes are detected and recorded in `conflict_log`.
 
-*State: phase 2.*
+*State: **implemented** (phase 2). 200 iterations x 8 agents x 16 units: 3,200
+claims, 0 double-claims, 5,603 recorded conflicts. The identical harness in
+`naive` mode double-claims 984 times in 25 iterations.*
 
 ### Two agents reach contradictory conclusions
 
@@ -146,6 +152,14 @@ that audit stream is surfaced in the dashboard (phase 6/7).
 `127.0.0.1:8080` locally and in CockroachDB Cloud for the cloud profile:
 transaction retries, contention hotspots, and hot ranges come for free.
 
+**Bugs this discipline has already caught**, listed because they are the
+argument for the discipline: a `SELECT ... FOR UPDATE` contention detector that
+only watched for 40001 aborts and therefore logged *zero* conflicts under heavy
+contention; a process-global log context that attributed every concurrent
+agent's work to the last one registered; a `timeout_seconds or default` that
+turned an explicit `0` into 30 seconds; and a crashed worker that reported a
+clean run with zero claims instead of an error.
+
 **Missing, and known to be missing:** metrics export (Prometheus/OTel),
 distributed tracing across agent → MCP → database, and alerting thresholds.
 
@@ -157,8 +171,9 @@ Concurrency bugs found by a judge are fatal; concurrency bugs found by our own
 stress test are a slide. Policy: **every conflict path gets a deterministic
 test.**
 
-Current suite: 72 tests, split into pure tests (no database) and `integration`
-tests, which skip rather than fail when no cluster is running. Integration tests
+Current suite: 107 tests, split into pure tests (no database) and `integration`
+tests, which skip rather than fail when no cluster is running. Stress depth is
+tunable with `QUORUM_STRESS_ITERATIONS` (default 200). Integration tests
 run against a separate `quorum_test` database, so running `pytest` never
 destroys a seeded demo workspace.
 
@@ -170,9 +185,15 @@ destroys a seeded demo workspace.
 | Vector index exists, is cosine, is workspace-scoped | `test_decisions_has_a_cosine_vector_index` | 1 ✅ |
 | Embedding width matches the configured model | `test_embedding_width_matches_configured_model` | 1 ✅ |
 | Non-retryable errors are not swallowed by the retry loop | `test_non_retryable_errors_propagate` | 1 ✅ |
-| N agents, M units: zero double-claims | stress test | 2 |
-| The same stress test *fails* under `naive` mode | stress test | 2 |
-| An expired lease is reclaimed exactly once | claim tests | 2 |
+| N agents, M units: zero double-claims (200 iterations) | `test_never_double_claims` | 2 ✅ |
+| Contention was real, not accidental serialization | `test_contention_is_real_and_recorded` | 2 ✅ |
+| The same harness *fails* under `naive` mode | `test_the_same_harness_produces_opposite_verdicts` | 2 ✅ |
+| `naive` races unaided, so the barrier is not the cause | `test_double_claims_without_any_help` | 2 ✅ |
+| `naive` logs zero conflicts while corrupting the workspace | `test_never_notices_its_own_conflicts` | 2 ✅ |
+| A SIGKILLed agent loses no work and blocks nobody | `test_dead_agent_loses_no_work_and_blocks_nobody` | 2 ✅ |
+| A heartbeating agent keeps its lease | `test_a_live_agent_keeps_its_lease` | 2 ✅ |
+| An expired lease is reclaimed, re-versioned, and logged | `TestExpiredLeases`, `TestReaper` | 2 ✅ |
+| A zombie agent cannot overwrite the takeover | `test_the_original_agent_cannot_overwrite_the_takeover` | 2 ✅ |
 | A contradiction is detected and supersedes exactly one decision | semantic tests | 4 |
 | A cascade re-queues every transitive dependent, or none | cascade tests | 5 |
 
@@ -206,8 +227,11 @@ coordination is hard and the failures are interesting.
 Known limits, unmeasured at the time of writing:
 
 - Every claim is a serializable transaction against a small hot set of pending
-  units. Beyond some agent count, contention on that hot set becomes the
-  bottleneck; sharded claim ordering would be the fix.
+  units, and deterministic `ORDER BY target` deliberately points every agent at
+  the same row. Measured: 8 agents over 16 units sustain ~40 claims/sec with
+  1.75 retries per claim, against ~293 claims/sec for the unsafe path. Beyond
+  some agent count the hot set is the bottleneck; randomised or sharded claim
+  ordering trades some contention visibility for throughput.
 - The semantic pre-check adds an ANN query plus a possible model call to every
   decision write. Decision volume, not unit volume, is what would bite first.
 - The cascade walks dependencies in one transaction. A pathological graph would
